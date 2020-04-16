@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+#####################################################################################
+# Generates a UUIDv4, stores the result in the clipboard and also outputs the value #
+#####################################################################################
+
+set -Eeuo pipefail
+
+uuid=$(uuidgen| tr '[:upper:]' '[:lower:]')
+echo ${uuid} | pbcopy
+echo $uuid

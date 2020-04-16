@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+
+################################################################
+# Executes some steps that are being done on a daily business: #
+#   1) update git folders under $GIT_DIR                       #
+#   2) update brew packages                                    #
+#   3) Perform additional tasks                                #
+################################################################
+
+# Constants
+GIT_DIR=/my/git/dir
+
+# Output expected
+TASKS=(
+)
+
+# No output requested
+SILENT_TASKS=(
+"open /Applications/WhatsApp.app"
+"open /Applications/Microsoft\ Outlook.app"
+"open /Applications/Slack.app"
+"open -a /Applications/Google\ Chrome.app \"https://google.com\""
+)
+
+function colorize_pipe() {
+    while read -r text;
+    do
+	if [ $# -eq 0 ]; then
+	    echo -e $text;
+	else
+	    echo -e "\033[${1}${text}\033[${2}"
+	fi
+    done
+}
+
+function colorize() {
+    local color=$1
+    local reset=$2
+    local text=$3
+
+    # If there is a STDIN pipe, use it. Otherwise use plain args
+    if [ -t 0 ]; then
+        echo $text | colorize_pipe $color $reset
+    else
+        colorize_pipe $color $reset
+    fi
+}
+
+function red() {
+ 	colorize 31m 39m $1
+}
+
+function blue() {
+    colorize 34m 39m $1
+}
+
+function green() {
+    colorize 32m 39m $1
+}
+
+function yellow() {
+    colorize 33m 39m $1
+}
+
+function white() {
+    colorize 97m 39m $1
+}
+
+function bold() {
+    colorize 1m 22m $1
+}
+
+function italic() {
+    colorize 3m 23m $1
+}
+
+function underline() {
+    colorize 4m 24m $1
+}
+
+function greet() {
+    echo
+    local username=$(whoami | white | bold)
+    local hour=$(date +%H)
+    if [ $hour -lt 12 ]; then
+      echo "Guten Morgen, ${username}!"
+    elif [ $hour -lt 18 ]; then
+      echo "Moin, ${username}!"
+    else
+      echo "Guten Abend, ${username}!"
+    fi
+    echo
+}
+
+function announce() {
+    if [ ! -z "$1" ]; then
+	    echo "-------- ${1} --------"
+    fi
+}
+
+function separate() {
+    local length=$(echo $1 | wc -c)
+    local num=$((17 + $length))
+    local v=$(printf "%-${num}s" "-")
+    echo "${v// /-}"
+    echo
+}
+
+function current-git-has-remote() {
+    test $(git branch -r | wc -l) -ne 0
+}
+
+function current-branch-is-untracked() {
+    local name=$(current-git-branch)
+    test $(git config --get "branch.${name}.merge" | wc -l) -eq 0
+}
+
+function current-branch-has-no-uncommitted-changes() {
+    test -z "$(git status -s)"
+}
+
+function current-branch-has-unstaged-changes() {
+    test -n "$(git diff-index --numstat HEAD)"
+}
+
+function current-git-branch() {
+    echo $(git branch | grep \* | cut -d ' ' -f2)
+}
+
+function git-get-local-rev-of-current-branch() {
+    git rev-parse @
+}
+
+function git-get-remote-rev-of-current-branch() {
+    if $(current-git-has-remote); then
+        git rev-parse ${1:-'@{u}'}
+    fi
+}
+
+function git-get-common-ancestor-for-local-and-remote-current-branch() {
+    if $(current-git-has-remote); then
+        git merge-base @ ${1:-'@{u}'}
+    fi
+}
+
+function git-get-pull-details() {
+    if $(current-git-has-remote); then
+        local localRev=$(git-get-local-rev-of-current-branch)
+        local remoteRev=$(git-get-remote-rev-of-current-branch)
+
+        if [[ $localRev != $remoteRev ]]; then
+            local commitsBehind=$(git rev-list --count "${localRev}..${remoteRev}")
+            echo "(${localRev} => ${remoteRev}) +${commitsBehind} commits"
+        fi
+    fi
+}
+
+function update-git-repos() {
+    local title="GIT Update"
+    announce $title
+    for DIR in $(find ${GIT_DIR} -type d -name .git)
+    do
+        local next_git_dir=$(dirname $DIR)
+        cd $next_git_dir
+
+        local branch=$(current-git-branch | bold | blue)
+        local git_status=""
+        local pullDetails=""
+
+        if $(current-git-has-remote); then
+            git fetch --quiet --prune
+
+            if $(current-branch-is-untracked); then
+                git_status=$(bold "\U0001F50C")
+            else
+                if $(current-branch-has-unstaged-changes); then
+                    branch=$branch$(bold "*")
+                elif $(current-branch-has-no-uncommitted-changes); then
+                    pullDetails=$(git-get-pull-details)
+                    git pull -q
+                    git gc -q
+                fi
+
+                git_status=$(git-status | bold)
+            fi
+        else
+            git_status=$(bold "\u26a1")
+        fi
+
+        printf "%-50s %1b\n" "${next_git_dir}:${branch} ${git_status} ${pullDetails}"
+        cd $GIT_DIR
+    done
+    separate $title
+}
+
+function git-status() {
+    local here=$(git-get-local-rev-of-current-branch)
+    local remote=$(git-get-remote-rev-of-current-branch)
+    local base=$(git-get-common-ancestor-for-local-and-remote-current-branch)
+
+    if [ $here = $remote ]; then
+	    echo $(green "\u2714")
+    elif [ $here = $base ]; then
+	    echo $(yellow "\u2193" | bold)
+    elif [ $remote = $base ]; then
+	    echo $(yellow "\u2191" | bold)
+    else
+	    echo $(red "\u21c5" | bold)
+    fi
+}
+
+function cry_and_die() {
+    # Write to STDERR and quit with Error code
+    (>&2 announce $(red "ERROR"))
+    (>&2 echo $1)
+    exit -1
+}
+
+function brew-upgrade() {
+    local package=$(echo $1 | jq -r ".name");
+    local next_version=$(echo $1 | jq -r ".current_version")
+    local current_version=$(echo $1 | jq -r ".installed_versions[0]")
+
+    echo -n "  * ${package} (${current_version} => ${next_version}) "
+    local error=$(brew upgrade $package > /dev/null 2>&1)
+
+    if [ $(echo $error | wc -c) -gt 1 ]; then
+	    echo $(bold " \U0001F4A3 \U0001F4A5")
+	    cry_and_die $error
+    else
+        brew cleanup ${package} > /dev/null
+	    echo $(green "\u2714")
+    fi
+}
+
+function brew-update() {
+    local title="HOMEBREW Update"
+    announce $title
+    local error=$(brew update 2>&1 > /dev/null)
+
+    if [ -n "$error" ]; then
+	    echo $error | red | bold
+    elif [ -z "$(brew outdated)" ]; then
+	    printf "%-58b %1b\n"  "Homebrew is $(bold up-to-date)!" $(green "\u2714")
+    else
+        printf "%-67b %1b\n"  "Homebrew is $(bold outdated | red)!" $(red "\u2718")
+
+        for line in $(brew outdated --json=v1 | jq -c -r ".[]");
+        do
+            brew-upgrade $line
+        done
+    fi
+    separate $title
+}
+
+function additional-tasks() {
+    if [[ "${#SILENT_TASKS[@]}" -gt 0 || "${#TASKS[@]}" -gt 0 ]]; then
+        local title="Additional tasks"
+        announce $title
+        for task in "${TASKS[@]}"
+        do
+            echo ""
+            announce "Executing Task (${task})"
+            eval $task
+            separate "Exetuting Task (${task})"
+        done
+
+        for task in "${SILENT_TASKS[@]}"
+        do
+            echo "* Executing Task (${task})"
+            eval $task
+        done
+        echo
+
+        separate $title
+    fi
+}
+
+greet
+update-git-repos
+brew-update
+additional-tasks
